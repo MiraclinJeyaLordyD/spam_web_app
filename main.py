@@ -1,274 +1,350 @@
-from pathlib import Path
 import re
+from pathlib import Path
 from urllib.parse import urlparse
-from typing import Optional, Dict, Any
 
 import joblib
-import numpy as np
 import pandas as pd
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-# -----------------------------
-# Paths & model loading
-# -----------------------------
+# ============================================================
+# PATHS & MODEL LOADING
+# ============================================================
 BASE_DIR = Path(__file__).resolve().parent
-MODELS_DIR = BASE_DIR / "models"
 
-tfidf = joblib.load(MODELS_DIR / "tfidf.pkl")
-text_model = joblib.load(MODELS_DIR / "text_model.pkl")
-url_model = joblib.load(MODELS_DIR / "url_model.pkl")
+tfidf = joblib.load(BASE_DIR / "tfidf.pkl")
+text_model = joblib.load(BASE_DIR / "text_model.pkl")
+url_model = joblib.load(BASE_DIR / "url_model.pkl")
 
-# -----------------------------
-# FastAPI app & templates
-# -----------------------------
-app = FastAPI(title="Spam Detection Web App")
+# ============================================================
+# FASTAPI APP & TEMPLATES
+# ============================================================
+app = FastAPI()
 
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+static_dir = BASE_DIR / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-class PredictRequest(BaseModel):
-    message: str
+# ============================================================
+# SAFE PUBLIC DOMAINS
+# ============================================================
+SAFE_BASE_DOMAINS = {
+    "google.com", "gmail.com", "youtube.com", "google.co.in",
+    "microsoft.com", "office.com", "live.com", "outlook.com",
+    "apple.com", "icloud.com", "android.com",
 
+    "amazon.in", "amazon.com", "flipkart.com",
+    "swiggy.com", "zomato.com", "bigbasket.com",
 
-# -----------------------------
-# Helper functions (similar to train_and_predict.py logic)
-# -----------------------------
+    "facebook.com", "instagram.com", "whatsapp.com", "twitter.com",
+    "x.com", "linkedin.com", "reddit.com", "pinterest.com",
 
-# Regex to extract URLs (http, https, or www)
-URL_REGEX = re.compile(r"((?:https?://|www\.)[^\s]+)", re.IGNORECASE)
+    "paytm.com", "phonepe.com", "bharatpe.com", "googlepay.com",
+    "razorpay.com", "billdesk.com", "ccavenue.com",
 
-SAFE_DOMAINS = {
-    # Add your own safe/whitelisted domains here
-    "google.com",
-    "gmail.com",
-    "youtube.com",
-    "facebook.com",
-    "instagram.com",
-    "whatsapp.com",
-    "amazon.in",
-    "flipkart.com",
-    "paytm.com",
-    "phonepe.com",
-    "icicibank.com",
-    "sbi.co.in",
-    "hdfcbank.com",
+    "icicibank.com", "hdfcbank.com", "sbi.co.in", "axisbank.com",
+    "kotak.com", "bankofbaroda.in", "canarabank.com",
+
+    "gov.in", "nic.in", "india.gov.in", "incometax.gov.in",
+    "uidai.gov.in", "passportindia.gov.in",
+
+    "airtel.in", "jio.com", "vi.in",
+
+    "chatgpt.com", "openai.com", "api.openai.com",
+    "vercel.app", "onrender.com", "github.com", "github.io",
 }
 
-BAD_TLDS = {
-    # Example suspicious TLDs
-    "xyz",
-    "top",
-    "click",
-    "link",
-    "work",
-    "info",
-    "cn",
-    "ru",
-    "zip",
-    "review",
-    "country",
+# ============================================================
+# SAFE PUBLIC DOMAIN CHECK
+# ============================================================
+def is_safe_domain(domain: str) -> bool:
+    if not domain:
+        return False
+    domain = domain.lower()
+    for base in SAFE_BASE_DOMAINS:
+        if domain == base or domain.endswith("." + base):
+            return True
+    return False
+
+
+# ============================================================
+# AUTO-SAFE: LOCALHOST / INTERNAL / JUPYTER
+# ============================================================
+def is_auto_safe_domain(domain: str) -> bool:
+    if not domain:
+        return False
+
+    domain = domain.lower()
+
+    # localhost / loopback
+    if domain.startswith("localhost") or domain.startswith("127.0.0.1"):
+        return True
+
+    # Private IP ranges
+    private_ip_ranges = [
+        r"^192\.168\.\d+\.\d+$",
+        r"^10\.\d+\.\d+\.\d+$",
+        r"^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$",
+    ]
+    for pattern in private_ip_ranges:
+        if re.match(pattern, domain):
+            return True
+
+    # Notebook environments
+    if "jupyter" in domain or "notebook" in domain:
+        return True
+
+    # .local hostnames
+    if domain.endswith(".local"):
+        return True
+
+    return False
+
+
+# ============================================================
+# UNIVERSAL VALID DOMAIN CHECKER
+# ============================================================
+VALID_TLDS = {
+    "com", "org", "net", "gov", "in", "co", "edu", "info", "app", "io", "ai",
+    "store", "shop", "tech", "dev", "me", "us", "uk", "ca", "au", "de", "fr",
+    "club", "link", "live", "online", "site", "blog",
 }
 
 
-def extract_url(text: str) -> Optional[str]:
-    """Extract the first URL from the text, if any."""
-    match = URL_REGEX.search(text)
-    if not match:
+def is_valid_safe_domain(domain: str) -> bool:
+    if not domain:
+        return False
+
+    domain = domain.lower()
+
+    # must contain dot
+    if "." not in domain:
+        return False
+
+    labels = domain.split(".")
+    tld = labels[-1]
+
+    # check TLD
+    if tld not in VALID_TLDS:
+        return False
+
+    # validate labels
+    for label in labels:
+        if not re.match(r"^[a-z0-9-]{1,63}$", label):
+            return False
+        if label.startswith("-") or label.endswith("-"):
+            return False
+
+    # domain length check
+    if len(domain) > 253:
+        return False
+
+    return True
+
+
+# ============================================================
+# SUSPICIOUS DOMAIN CHECKER
+# ============================================================
+BAD_TLDS = {"xyz", "top", "zip", "ml", "ga", "tk", "ru", "cn"}
+
+
+def is_suspicious_domain(domain: str) -> bool:
+    if not domain:
+        return True
+
+    domain = domain.lower()
+
+    # too many dots → suspicious
+    if domain.count(".") > 5:
+        return True
+
+    # invalid characters
+    if re.search(r"[^a-z0-9\.-]", domain):
+        return True
+
+    # double dots
+    if ".." in domain:
+        return True
+
+    # all-numeric domains
+    if re.fullmatch(r"[0-9\-\.]+", domain):
+        return True
+
+    # bad TLDs
+    if domain.split(".")[-1] in BAD_TLDS:
+        return True
+
+    return False
+
+
+# ============================================================
+# URL HELPERS
+# ============================================================
+URL_REGEX = re.compile(r"((?:https?://|www\.)[^\s]+)")
+
+
+def extract_url(text: str):
+    m = URL_REGEX.search(text)
+    if not m:
         return None
-    url = match.group(1)
-    # Normalize URL to make sure it has scheme
-    if not url.lower().startswith(("http://", "https://")):
+    url = m.group(1)
+    if not url.startswith(("http://", "https://")):
         url = "http://" + url
-    return url.strip()
+    return url
 
 
-def extract_domain(url: str) -> Optional[str]:
-    """Extract domain/host from URL."""
+def extract_domain(url: str):
     try:
-        parsed = urlparse(url)
-        host = parsed.netloc or parsed.path
-        host = host.split("/")[0]
+        host = urlparse(url).netloc.lower()
         if host.startswith("www."):
             host = host[4:]
-        return host.lower()
+        return host
     except Exception:
         return None
 
 
-def is_ip_address(host: str) -> bool:
-    """Check if host is an IP address."""
-    ip_pattern = re.compile(
-        r"^(?:\d{1,3}\.){3}\d{1,3}$"
-    )  # simple IPv4 check, enough for this use
-    return bool(ip_pattern.match(host))
-
-
-def is_safe_domain(domain: Optional[str]) -> bool:
-    if not domain:
+def is_ip(url: str) -> bool:
+    try:
+        host = urlparse(url).netloc
+        return bool(re.match(r"^(?:\d{1,3}\.){3}\d{1,3}$", host))
+    except Exception:
         return False
-    # Exact match on known safe domains
-    return domain in SAFE_DOMAINS
 
 
-def has_bad_tld(domain: Optional[str]) -> bool:
-    if not domain:
-        return False
-    parts = domain.split(".")
-    if not parts:
-        return False
-    tld = parts[-1]
-    return tld in BAD_TLDS
+# ============================================================
+# CORE PREDICTION FUNCTION
+# ============================================================
+def predict_sms_or_url(message: str):
+    message = (message or "").strip()
 
+    # ---------------- TEXT MODEL ----------------
+    text_vec = tfidf.transform([message])
+    text_prob = float(text_model.predict_proba(text_vec)[0][1])
 
-def build_url_features(url: str, domain: Optional[str]) -> pd.DataFrame:
-    """
-    Build URL feature dataframe to feed into url_model.
-    This tries to match typical URL feature names used earlier.
-    You can adjust if your train_and_predict.py uses slightly different names.
-    """
-    url_str = url or ""
-    length = len(url_str)
-    num_digits = sum(ch.isdigit() for ch in url_str)
-    num_letters = sum(ch.isalpha() for ch in url_str)
-    is_https = 1 if url_str.lower().startswith("https://") else 0
-    have_at = 1 if "@" in url_str else 0
-    num_qmarks = url_str.count("?")
-    num_ampersand = url_str.count("&")
-    num_equals = url_str.count("=")
-    num_dots = url_str.count(".")
-    # "Other special chars" (rough approximation)
-    special_chars = r"/#:;,_-"
-    num_other_special = sum(ch in special_chars for ch in url_str)
-    host = extract_domain(url_str) or ""
-    have_ip = 1 if is_ip_address(host) else 0
+    # ---------------- URL MODEL ----------------
+    url = extract_url(message)
+    domain = extract_domain(url) if url else None
+    url_prob = None
 
-    # Base feature dict (names based on your previous dataset columns)
-    feature_dict: Dict[str, Any] = {
-        "URLLength": length,
-        "num_digits_url": num_digits,
-        "NoOfLettersInURL": num_letters,
-        "is_https": is_https,
-        "have_at": have_at,
-        "have_ip": have_ip,
-        "NoOfQMarkInURL": num_qmarks,
-        "NoOfAmpersandInURL": num_ampersand,
-        "NoOfEqualsInURL": num_equals,
-        "NoOfOtherSpecialCharsInURL": num_other_special,
-        "url_num_dots": num_dots,
-        "url": url_str,
+    if url:
+        feat = {
+            "URLLength": len(url),
+            "num_digits_url": sum(c.isdigit() for c in url),
+            "NoOfLettersInURL": sum(c.isalpha() for c in url),
+            "is_https": 1 if url.startswith("https://") else 0,
+            "have_at": 1 if "@" in url else 0,
+            "NoOfQMarkInURL": url.count("?"),
+            "NoOfAmpersandInURL": url.count("&"),
+            "NoOfEqualsInURL": url.count("="),
+            "url_num_dots": url.count("."),
+            "NoOfOtherSpecialCharsInURL": sum(c in "/#:;,_-" for c in url),
+            "have_ip": 1 if is_ip(url) else 0,
+        }
+
+        df_pred = (
+            pd.DataFrame([feat])
+            .reindex(columns=url_model.feature_names_in_, fill_value=0)
+        )
+        url_prob = float(url_model.predict_proba(df_pred)[0][1])
+
+    # ========================================================
+    # MASTER SAFE OVERRIDE: ANY SAFE DOMAIN → HAM
+    # ========================================================
+    if domain:
+        if (
+            is_auto_safe_domain(domain)
+            or is_safe_domain(domain)
+            or (is_valid_safe_domain(domain) and not is_suspicious_domain(domain))
+        ):
+            return {
+                "Prediction": "HAM",
+                "Text_Spam_Probability": round(text_prob, 4),
+                "URL_Spam_Probability": round(url_prob, 4) if url_prob is not None else None,
+                "Final_Spam_Probability": 0.0,
+                "Extracted_URL": url,
+                "Domain": domain,
+                "Is_Safe_Domain": True,
+            }
+
+    # ========================================================
+    # NORMAL COMBINATION
+    # ========================================================
+    if url_prob is None:
+        final_prob = text_prob
+    else:
+        final_prob = 1 - ((1 - text_prob) * (1 - url_prob))
+
+    label = "SPAM" if final_prob >= 0.5 else "HAM"
+
+    return {
+        "Prediction": label,
+        "Text_Spam_Probability": round(text_prob, 4),
+        "URL_Spam_Probability": round(url_prob, 4) if url_prob is not None else None,
+        "Final_Spam_Probability": round(final_prob, 4),
+        "Extracted_URL": url,
+        "Domain": domain,
+        "Is_Safe_Domain": False,
     }
 
-    # Align with model's feature order if available
-    feature_names = getattr(url_model, "feature_names_in_", None)
-    if feature_names is not None:
-        # Create a dictionary with exactly the model's feature names
-        aligned = {name: 0 for name in feature_names}
-        for k, v in feature_dict.items():
-            if k in aligned:
-                aligned[k] = v
-        df = pd.DataFrame([aligned])
-    else:
-        # Fallback: just use feature_dict (model must have been trained the same way)
-        df = pd.DataFrame([feature_dict])
 
-    return df
+# ============================================================
+# Pydantic Model for JSON API
+# ============================================================
+class PredictRequest(BaseModel):
+    message: str
 
 
-def get_text_spam_prob(message: str) -> float:
-    """Get spam probability from the text model."""
-    X = tfidf.transform([message])
-    # Assuming models support predict_proba (MultinomialNB, LogisticRegression etc.)
-    prob = text_model.predict_proba(X)[0, 1]
-    return float(prob)
-
-
-def get_url_spam_prob(url: str, domain: Optional[str]) -> float:
-    """Get spam probability from the URL model."""
-    df_features = build_url_features(url, domain)
-    prob = url_model.predict_proba(df_features)[0, 1]
-    return float(prob)
-
-
-def combine_probabilities(text_prob: float, url_prob: Optional[float]) -> float:
-    """
-    Combine text and URL spam probabilities into a final probability.
-    This uses a noisy-OR style combination:
-        final = 1 - (1 - text_prob) * (1 - url_prob)
-    If there is no URL, we just return text_prob.
-
-    If your train_and_predict.py uses a different formula,
-    you can replace this function with that exact logic.
-    """
-    if url_prob is None:
-        return text_prob
-    return 1.0 - (1.0 - text_prob) * (1.0 - url_prob)
-
-
-# -----------------------------
-# Routes
-# -----------------------------
+# ============================================================
+# ROUTES
+# ============================================================
 @app.get("/")
 async def index(request: Request):
-    """Render the main HTML page."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    """
+    Simple HTML page with one input box (SMS/Text/URL).
+    """
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "result": None,
+            "input_text": "",
+        },
+    )
 
 
 @app.post("/predict")
-async def predict(request_data: PredictRequest):
-    message = request_data.message.strip()
+async def predict_form(request: Request, message: str = Form(...)):
+    """
+    Handles form submission from the HTML UI.
+    """
+    result = predict_sms_or_url(message)
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "result": result,
+            "input_text": message,
+        },
+    )
 
-    if not message:
-        return JSONResponse(
-            status_code=400, content={"error": "Message cannot be empty."}
-        )
 
-    # 1. Text spam probability
-    try:
-        text_spam_prob = get_text_spam_prob(message)
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error in text model prediction: {str(e)}"},
-        )
+@app.post("/api/predict")
+async def predict_api(payload: PredictRequest):
+    """
+    JSON API endpoint for programmatic access.
+    """
+    result = predict_sms_or_url(payload.message)
+    return result
 
-    # 2. URL extraction & probability
-    extracted_url = extract_url(message)
-    domain = extract_domain(extracted_url) if extracted_url else None
 
-    url_spam_prob: Optional[float] = None
+# ============================================================
+# DEV SERVER ENTRYPOINT (optional for local run)
+# ============================================================
+if __name__ == "__main__":
+    import uvicorn
 
-    if extracted_url and domain:
-        try:
-            url_spam_prob = get_url_spam_prob(extracted_url, domain)
-        except Exception:
-            # If URL model fails for some reason, keep it None
-            url_spam_prob = None
-
-        # Optional: adjust URL probability using safe-domain / bad TLD heuristics
-        if is_safe_domain(domain):
-            # Strongly reduce probability if known safe domain
-            url_spam_prob = url_spam_prob * 0.3 if url_spam_prob is not None else 0.0
-        elif has_bad_tld(domain):
-            # Slightly boost probability for bad TLD
-            url_spam_prob = min(1.0, (url_spam_prob or 0.0) + 0.2)
-
-    # 3. Final combined probability
-    final_spam_prob = combine_probabilities(text_spam_prob, url_spam_prob)
-
-    prediction_label = "SPAM" if final_spam_prob >= 0.5 else "HAM"
-
-    response_data = {
-        "prediction": prediction_label,
-        "text_spam_probability": round(text_spam_prob, 4),
-        "url_spam_probability": round(url_spam_prob, 4) if url_spam_prob is not None else None,
-        "final_spam_probability": round(final_spam_prob, 4),
-        "extracted_url": extracted_url,
-        "domain": domain,
-    }
-
-    return JSONResponse(content=response_data)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
