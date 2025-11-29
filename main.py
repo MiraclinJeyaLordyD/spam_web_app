@@ -10,29 +10,27 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 # ============================================================
-# PROJECT PATHS
+# PATHS
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_DIR = BASE_DIR / "models"  # <-- Models folder
+MODEL_DIR = BASE_DIR / "models"
 
-# Load models
 tfidf = joblib.load(MODEL_DIR / "tfidf.pkl")
 text_model = joblib.load(MODEL_DIR / "text_model.pkl")
 url_model = joblib.load(MODEL_DIR / "url_model.pkl")
 
 # ============================================================
-# FASTAPI APP
+# FASTAPI
 # ============================================================
 app = FastAPI()
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-
 static_dir = BASE_DIR / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # ============================================================
-# SAFE PUBLIC DOMAINS
+# SAFE DOMAIN CHECKERS
 # ============================================================
 SAFE_BASE_DOMAINS = {
     "google.com","gmail.com","youtube.com","google.co.in",
@@ -57,127 +55,76 @@ SAFE_BASE_DOMAINS = {
     "airtel.in","jio.com","vi.in",
 
     "chatgpt.com","openai.com","api.openai.com",
-    "vercel.app","onrender.com","github.com","github.io"
+    "vercel.app","onrender.com","github.com","github.io",
 }
 
 VALID_TLDS = {
     "com","org","net","gov","in","co","edu","info","app","io","ai",
     "store","shop","tech","dev","me","us","uk","ca","au","de","fr",
-    "club","link","live","online","site","blog"
+    "club","link","live","online","site","blog",
 }
 
 BAD_TLDS = {"xyz","top","zip","ml","ga","tk","ru","cn"}
 
-# ============================================================
-# SAFE DOMAIN CHECKERS
-# ============================================================
 def is_safe_domain(domain):
-    if not domain:
-        return False
+    if not domain: return False
     domain = domain.lower()
-
-    for base in SAFE_BASE_DOMAINS:
-        if domain == base or domain.endswith("." + base):
-            return True
-    return False
-
+    return any(domain == b or domain.endswith("." + b) for b in SAFE_BASE_DOMAINS)
 
 def is_auto_safe_domain(domain):
-    if not domain:
-        return False
-
+    if not domain: return False
     domain = domain.lower()
-
-    if domain.startswith("localhost") or domain.startswith("127.0.0.1"):
+    if domain.startswith(("localhost", "127.0.0.1")):
         return True
-
-    private_ranges = [
-        r"^192\.168\.\d+\.\d+$",
-        r"^10\.\d+\.\d+\.\d+$",
-        r"^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$",
-    ]
-    for p in private_ranges:
-        if re.match(p, domain):
-            return True
-
+    if re.match(r"^192\.168\.\d+\.\d+$", domain): return True
+    if re.match(r"^10\.\d+\.\d+\.\d+$", domain): return True
+    if re.match(r"^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$", domain): return True
     if "jupyter" in domain or "notebook" in domain:
         return True
-
     if domain.endswith(".local"):
         return True
-
     return False
-
 
 def is_valid_safe_domain(domain):
     if not domain or "." not in domain:
         return False
-
-    domain = domain.lower()
-    parts = domain.split(".")
-    tld = parts[-1]
-
-    if tld not in VALID_TLDS:
+    labels = domain.split(".")
+    if labels[-1] not in VALID_TLDS:
         return False
-
-    for p in parts:
-        if not re.match(r"^[a-z0-9-]{1,63}$", p):
-            return False
-        if p.startswith("-") or p.endswith("-"):
-            return False
-
+    for l in labels:
+        if not re.match(r"^[a-z0-9-]{1,63}$", l): return False
+        if l.startswith("-") or l.endswith("-"): return False
     return len(domain) <= 253
 
-
 def is_suspicious_domain(domain):
-    if not domain:
-        return True
-
+    if not domain: return True
     domain = domain.lower()
-
-    if domain.count(".") > 5:
-        return True
-
-    if re.search(r"[^a-z0-9\.-]", domain):
-        return True
-
-    if ".." in domain:
-        return True
-
-    if re.fullmatch(r"[0-9\-\.]+", domain):
-        return True
-
-    if domain.split(".")[-1] in BAD_TLDS:
-        return True
-
+    if domain.count(".") > 5: return True
+    if ".." in domain: return True
+    if re.search(r"[^a-z0-9\.-]", domain): return True
+    if re.fullmatch(r"[0-9\.-]+", domain): return True
+    if domain.split(".")[-1] in BAD_TLDS: return True
     return False
-
 
 # ============================================================
 # URL HELPERS
 # ============================================================
 URL_REGEX = re.compile(r"((?:https?://|www\.)[^\s]+)")
 
-
 def extract_url(text):
     m = URL_REGEX.search(text)
-    if not m:
-        return None
+    if not m: return None
     url = m.group(1)
     if not url.startswith(("http://", "https://")):
         url = "http://" + url
     return url
 
-
 def extract_domain(url):
     try:
         host = urlparse(url).netloc.lower()
-        if host.startswith("www."):
-            host = host[4:]
-        return host
+        return host[4:] if host.startswith("www.") else host
     except:
         return None
-
 
 def is_ip(url):
     try:
@@ -186,20 +133,19 @@ def is_ip(url):
     except:
         return False
 
-
 # ============================================================
-# MAIN PREDICTION FUNCTION
+# MAIN PREDICTION
 # ============================================================
 def predict_sms_or_url(message):
-    message = message.strip()
+    if not message:
+        return {"error": "Empty message"}
 
-    # Text model
     text_vec = tfidf.transform([message])
     text_prob = float(text_model.predict_proba(text_vec)[0][1])
 
-    # URL model
     url = extract_url(message)
     domain = extract_domain(url) if url else None
+
     url_prob = None
 
     if url:
@@ -217,13 +163,20 @@ def predict_sms_or_url(message):
             "have_ip": 1 if is_ip(url) else 0,
         }
 
-        df_pred = pd.DataFrame([feat]).reindex(columns=url_model.feature_names_in_, fill_value=0)
+        df_pred = pd.DataFrame([feat])
+
+        # SAFE FIX — guarantee all features exist
+        for col in url_model.feature_names_in_:
+            if col not in df_pred.columns:
+                df_pred[col] = 0
+
+        df_pred = df_pred[url_model.feature_names_in_]
+
         url_prob = float(url_model.predict_proba(df_pred)[0][1])
 
-    # ======================= SAFE OVERRIDE =======================
+    # SAFE OVERRIDES
     if domain:
-        if (
-            is_auto_safe_domain(domain)
+        if (is_auto_safe_domain(domain)
             or is_safe_domain(domain)
             or (is_valid_safe_domain(domain) and not is_suspicious_domain(domain))
         ):
@@ -237,7 +190,6 @@ def predict_sms_or_url(message):
                 "Is_Safe_Domain": True,
             }
 
-    # ======================= NORMAL COMBINATION =======================
     final_prob = text_prob if url_prob is None else 1 - ((1 - text_prob) * (1 - url_prob))
     label = "SPAM" if final_prob >= 0.5 else "HAM"
 
@@ -251,43 +203,47 @@ def predict_sms_or_url(message):
         "Is_Safe_Domain": False,
     }
 
-
-# ============================================================
-# Pydantic model
-# ============================================================
-class PredictRequest(BaseModel):
-    message: str
-
-
 # ============================================================
 # ROUTES
 # ============================================================
+@app.head("/")
+async def head_root():
+    return {}
+
 @app.get("/")
 async def index(request: Request):
-    return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "result": None, "input_text": ""},
-    )
-
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "result": None,
+        "input_text": ""
+    })
 
 @app.post("/predict")
-async def predict_form(request: Request, message: str = Form(...)):
-    result = predict_sms_or_url(message)
-    return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "result": result, "input_text": message},
-    )
+async def predict_form(request: Request, message: str = Form(None)):
+    if not message:
+        return templates.TemplateResponse("index.html", {
+            "request": request,
+            "result": {"error": "Message cannot be empty"},
+            "input_text": message
+        })
 
+    result = predict_sms_or_url(message)
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "result": result,
+        "input_text": message
+    })
+
+class PredictRequest(BaseModel):
+    message: str
 
 @app.post("/api/predict")
 async def api_predict(payload: PredictRequest):
     return predict_sms_or_url(payload.message)
 
-
 # ============================================================
-# LOCAL RUN
+# LOCAL DEV
 # ============================================================
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
