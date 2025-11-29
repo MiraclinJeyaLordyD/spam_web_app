@@ -28,7 +28,7 @@ document.addEventListener("DOMContentLoaded", function () {
         loadingEl.style.display = "block";
 
         try {
-            const response = await fetch("/predict", {
+            const response = await fetch("/api/predict", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -45,38 +45,21 @@ document.addEventListener("DOMContentLoaded", function () {
                 return;
             }
 
-            // Fill result fields
-            const prediction = data.prediction || "";
-            predictionValue.textContent = prediction;
+            // Fill results
+            predictionValue.textContent = data.Prediction || "N/A";
             predictionValue.classList.remove("spam", "ham");
-            if (prediction === "SPAM") {
-                predictionValue.classList.add("spam");
-            } else if (prediction === "HAM") {
-                predictionValue.classList.add("ham");
-            }
 
-            textProbValue.textContent =
-                data.text_spam_probability !== null &&
-                data.text_spam_probability !== undefined
-                    ? data.text_spam_probability
-                    : "N/A";
+            if (data.Prediction === "SPAM") predictionValue.classList.add("spam");
+            if (data.Prediction === "HAM") predictionValue.classList.add("ham");
 
-            urlProbValue.textContent =
-                data.url_spam_probability !== null &&
-                data.url_spam_probability !== undefined
-                    ? data.url_spam_probability
-                    : "No URL";
-
-            finalProbValue.textContent =
-                data.final_spam_probability !== null &&
-                data.final_spam_probability !== undefined
-                    ? data.final_spam_probability
-                    : "N/A";
-
-            extractedUrlValue.textContent = data.extracted_url || "None";
-            domainValue.textContent = data.domain || "None";
+            textProbValue.textContent = data.Text_Spam_Probability ?? "N/A";
+            urlProbValue.textContent = data.URL_Spam_Probability ?? "No URL";
+            finalProbValue.textContent = data.Final_Spam_Probability ?? "N/A";
+            extractedUrlValue.textContent = data.Extracted_URL || "None";
+            domainValue.textContent = data.Domain || "None";
 
             resultEl.style.display = "block";
+
         } catch (err) {
             loadingEl.style.display = "none";
             errorEl.textContent = "Network / server error. Please try again.";
