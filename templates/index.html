@@ -2,65 +2,48 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Spam Detection Web App</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spam Detection System</title>
+
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+
 <div class="container">
     <h1>Spam Detection System</h1>
-    <p class="subtitle">
-        Enter any SMS / text / message (with or without URL) and click <strong>Predict</strong>.
+    <p>
+        Enter any SMS / text / message (with or without URL) and click 
+        <b>Predict</b>.
     </p>
 
-    <form id="predict-form">
+    <!-- Form submits directly to FastAPI (NO JavaScript fetch) -->
+    <form method="POST" action="/predict">
         <label for="message">Message</label>
-        <textarea id="message" name="message" rows="5"
-                  placeholder="Type or paste your message here..."></textarea>
+        <textarea id="message" name="message" required>{{ input_text }}</textarea>
 
-        <button type="submit" id="predict-button">Predict</button>
+        <button type="submit" class="btn">Predict</button>
     </form>
 
-    <div id="loading" class="loading" style="display:none;">
-        Predicting...
-    </div>
+    <!-- RESULT BLOCK -->
+    {% if result %}
+        {% if result.error %}
+            <div class="error">{{ result.error }}</div>
+        {% else %}
+            <div class="card">
+                <h2>Prediction: {{ result.Prediction }}</h2>
 
-    <div id="error" class="error" style="display:none;"></div>
+                <p><b>Final Spam Probability:</b> {{ result.Final_Spam_Probability }}</p>
+                <p><b>Text Spam Probability:</b> {{ result.Text_Spam_Probability }}</p>
+                <p><b>URL Spam Probability:</b> {{ result.URL_Spam_Probability }}</p>
 
-    <div id="result" class="result" style="display:none;">
-        <h2>Prediction Result</h2>
-
-        <div class="result-row">
-            <span class="label">Prediction:</span>
-            <span id="prediction-value" class="value"></span>
-        </div>
-
-        <div class="result-row">
-            <span class="label">Text Spam Probability:</span>
-            <span id="text-prob-value" class="value"></span>
-        </div>
-
-        <div class="result-row">
-            <span class="label">URL Spam Probability:</span>
-            <span id="url-prob-value" class="value"></span>
-        </div>
-
-        <div class="result-row">
-            <span class="label">Final Spam Probability:</span>
-            <span id="final-prob-value" class="value"></span>
-        </div>
-
-        <div class="result-row">
-            <span class="label">Extracted URL:</span>
-            <span id="extracted-url-value" class="value"></span>
-        </div>
-
-        <div class="result-row">
-            <span class="label">Domain:</span>
-            <span id="domain-value" class="value"></span>
-        </div>
-    </div>
+                <p><b>Extracted URL:</b> {{ result.Extracted_URL }}</p>
+                <p><b>Domain:</b> {{ result.Domain }}</p>
+                <p><b>Safe Domain:</b> {{ result.Is_Safe_Domain }}</p>
+            </div>
+        {% endif %}
+    {% endif %}
 </div>
 
-<script src="{{ url_for('static', path='app.js') }}"></script>
+<script src="/static/app.js"></script>
 </body>
 </html>
